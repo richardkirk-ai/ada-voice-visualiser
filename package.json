@@ -1,0 +1,27 @@
+{
+  "name": "ada-voice-visualiser",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/richardkirk-ai/ada-voice-visualiser.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/richardkirk-ai/ada-voice-visualiser/issues"
+  },
+  "homepage": "https://github.com/richardkirk-ai/ada-voice-visualiser#readme",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "twilio": "^6.0.2"
+  }
+}
