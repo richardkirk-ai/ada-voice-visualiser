@@ -8,6 +8,8 @@ let timerInterval = null;
 let callSeconds = 0;
 let recognition = null;
 let jsonOpen = false;
+let lastLocalActivity = 0;
+let lastRemoteActivity = 0;
 
 // ── On load ──
 window.addEventListener('DOMContentLoaded', () => {
@@ -111,30 +113,61 @@ function stopTimer() {
   document.getElementById('callTimer').classList.remove('active');
 }
 
-// ── Waveform (mic input) ──
+// ── Waveform + VAD for speaker detection ──
 function startWaveform() {
   const canvas = document.getElementById('waveform');
   const ctx = canvas.getContext('2d');
+  const VAD_THRESHOLD = 10; // RMS threshold for voice activity
 
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(localStream => {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Local (customer mic) analyser — used for waveform + VAD
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 1024;
-    const source = audioContext.createMediaStreamSource(stream);
-    source.connect(analyser);
+    const localSource = audioContext.createMediaStreamSource(localStream);
+    localSource.connect(analyser);
+
+    // Remote (Ada audio) analyser — VAD only
+    let remoteAnalyser = null;
+    try {
+      const remoteStream = activeCall && activeCall.getRemoteStream
+        ? activeCall.getRemoteStream()
+        : null;
+      if (remoteStream) {
+        remoteAnalyser = audioContext.createAnalyser();
+        remoteAnalyser.fftSize = 512;
+        const remoteSource = audioContext.createMediaStreamSource(remoteStream);
+        remoteSource.connect(remoteAnalyser);
+      }
+    } catch (e) { /* remote stream not available */ }
 
     const bufferLength = analyser.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
+    const remoteData = remoteAnalyser ? new Uint8Array(remoteAnalyser.frequencyBinCount) : null;
+
+    function rms(data) {
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += Math.pow((data[i] - 128) / 128, 2);
+      return Math.sqrt(sum / data.length) * 100;
+    }
 
     function draw() {
       animFrame = requestAnimationFrame(draw);
       analyser.getByteTimeDomainData(dataArray);
 
+      // Update VAD timestamps
+      const localLevel = rms(dataArray);
+      if (localLevel > VAD_THRESHOLD) lastLocalActivity = Date.now();
+      if (remoteAnalyser && remoteData) {
+        remoteAnalyser.getByteTimeDomainData(remoteData);
+        if (rms(remoteData) > VAD_THRESHOLD) lastRemoteActivity = Date.now();
+      }
+
       const w = canvas.width = canvas.offsetWidth;
       const h = canvas.height;
       ctx.clearRect(0, 0, w, h);
 
-      // Subtle background glow
       const gradient = ctx.createLinearGradient(0, 0, w, 0);
       gradient.addColorStop(0, 'rgba(98,0,234,0)');
       gradient.addColorStop(0.5, 'rgba(98,0,234,0.06)');
@@ -207,7 +240,10 @@ function startTranscription() {
       const t = event.results[i][0].transcript;
       if (event.results[i].isFinal) {
         if (interimEl) { interimEl.remove(); interimEl = null; }
-        appendTranscript('You', t);
+        // Attribute to Ada if remote audio was more recently active
+        const isAda = lastRemoteActivity > lastLocalActivity
+          && (Date.now() - lastRemoteActivity) < 2000;
+        appendTranscript(isAda ? 'Ada' : 'Customer', t);
       } else {
         interim += t;
       }
@@ -237,9 +273,9 @@ function appendTranscript(speaker, text) {
   const body = document.getElementById('transcriptBody');
   const line = document.createElement('div');
   line.className = 'transcript-line';
-  const isAda = speaker === 'Ada';
+  const cls = speaker === 'Ada' ? 'ada' : 'customer';
   line.innerHTML = `
-    <span class="transcript-speaker ${isAda ? 'ada' : 'you'}">${speaker}</span>
+    <span class="transcript-speaker ${cls}">${speaker}</span>
     <span class="transcript-text">${text}</span>
   `;
   body.appendChild(line);
