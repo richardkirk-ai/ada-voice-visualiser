@@ -9,7 +9,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-const { TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET, TWILIO_TWIML_APP_SID, ADA_PHONE_NUMBER, PORT = 3000 } = process.env;
+const { TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET, TWILIO_TWIML_APP_SID, ADA_PHONE_NUMBER, PORT = 3001 } = process.env;
 
 // Generate Twilio access token for the browser client
 app.get('/token', (req, res) => {

@@ -15,19 +15,28 @@ window.addEventListener('DOMContentLoaded', () => {
   initToken();
 });
 
-// ── Twilio token + device setup ──
+// ── Twilio token + device setup (SDK v2) ──
 async function initToken() {
   try {
     const res = await fetch('/token');
     const { token } = await res.json();
 
-    device = new Twilio.Device(token, { codecPreferences: ['opus', 'pcmu'] });
+    device = new Twilio.Device(token, {
+      codecPreferences: ['opus', 'pcmu'],
+      logLevel: 1,
+    });
 
-    device.on('ready', () => setStatus('Ready', ''));
-    device.on('error', (err) => setStatus('Error', ''));
+    device.on('registered', () => setStatus('Ready', ''));
+    device.on('error', (err) => {
+      console.error('Twilio device error:', err);
+      setStatus('Device error', '');
+    });
     device.on('connect', onCallConnected);
     device.on('disconnect', onCallEnded);
+
+    await device.register();
   } catch (e) {
+    console.error('Token/device init error:', e);
     setStatus('Token error — is server running?', '');
   }
 }
@@ -38,24 +47,38 @@ async function startCall() {
   setStatus('Connecting…', 'connecting');
   document.getElementById('callBtn').disabled = true;
   document.getElementById('hangupBtn').disabled = false;
-  activeCall = device.connect();
+  try {
+    activeCall = await device.connect();
+    activeCall.on('accept', onCallConnected);
+    activeCall.on('disconnect', onCallEnded);
+    activeCall.on('error', (err) => {
+      console.error('Call error:', err);
+      onCallEnded();
+    });
+  } catch (e) {
+    console.error('Call connect error:', e);
+    setStatus('Call failed', '');
+    document.getElementById('callBtn').disabled = false;
+    document.getElementById('hangupBtn').disabled = true;
+  }
 }
 
 function endCall() {
-  if (device) device.disconnectAll();
+  if (activeCall) activeCall.disconnect();
+  else if (device) device.disconnectAll();
 }
 
-function onCallConnected(conn) {
-  activeCall = conn;
+function onCallConnected(call) {
+  if (call) activeCall = call;
   setStatus('Live', 'active');
   startTimer();
-  startWaveform(conn);
+  startWaveform();
   startTranscription();
 }
 
 function onCallEnded() {
   activeCall = null;
-  setStatus('Call ended', '');
+  setStatus('Ready', '');
   stopTimer();
   stopWaveform();
   stopTranscription();
@@ -88,80 +111,70 @@ function stopTimer() {
   document.getElementById('callTimer').classList.remove('active');
 }
 
-// ── Waveform ──
-function startWaveform(conn) {
+// ── Waveform (mic input) ──
+function startWaveform() {
   const canvas = document.getElementById('waveform');
   const ctx = canvas.getContext('2d');
 
-  audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  analyser = audioContext.createAnalyser();
-  analyser.fftSize = 1024;
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 1024;
+    const source = audioContext.createMediaStreamSource(stream);
+    source.connect(analyser);
 
-  // Try to tap the call's media stream
-  try {
-    const stream = conn.getLocalStream ? conn.getLocalStream() : null;
-    if (stream) {
-      const source = audioContext.createMediaStreamSource(stream);
-      source.connect(analyser);
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    function draw() {
+      animFrame = requestAnimationFrame(draw);
+      analyser.getByteTimeDomainData(dataArray);
+
+      const w = canvas.width = canvas.offsetWidth;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      // Subtle background glow
+      const gradient = ctx.createLinearGradient(0, 0, w, 0);
+      gradient.addColorStop(0, 'rgba(98,0,234,0)');
+      gradient.addColorStop(0.5, 'rgba(98,0,234,0.06)');
+      gradient.addColorStop(1, 'rgba(98,0,234,0)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#7C4DFF';
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = '#6200EA';
+      ctx.beginPath();
+
+      const sliceWidth = w / bufferLength;
+      let x = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        const v = dataArray[i] / 128.0;
+        const y = (v * h) / 2;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        x += sliceWidth;
+      }
+      ctx.lineTo(w, h / 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
     }
-  } catch (e) {
-    // Fall back to mic input
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-      const source = audioContext.createMediaStreamSource(stream);
-      source.connect(analyser);
-    });
-  }
 
-  const bufferLength = analyser.frequencyBinCount;
-  const dataArray = new Uint8Array(bufferLength);
-  const purple = '#6200EA';
-  const purpleLight = '#7C4DFF';
-
-  function draw() {
-    animFrame = requestAnimationFrame(draw);
-    analyser.getByteTimeDomainData(dataArray);
-
-    const w = canvas.width = canvas.offsetWidth;
-    const h = canvas.height;
-
-    ctx.clearRect(0, 0, w, h);
-
-    // Background glow when active
-    const gradient = ctx.createLinearGradient(0, 0, w, 0);
-    gradient.addColorStop(0, 'rgba(98,0,234,0)');
-    gradient.addColorStop(0.5, 'rgba(98,0,234,0.06)');
-    gradient.addColorStop(1, 'rgba(98,0,234,0)');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, w, h);
-
-    // Waveform line
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = purpleLight;
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = purple;
-    ctx.beginPath();
-
-    const sliceWidth = w / bufferLength;
-    let x = 0;
-    for (let i = 0; i < bufferLength; i++) {
-      const v = dataArray[i] / 128.0;
-      const y = (v * h) / 2;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      x += sliceWidth;
-    }
-    ctx.lineTo(w, h / 2);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-  }
-
-  draw();
+    draw();
+  }).catch(err => {
+    console.warn('Mic access denied, waveform disabled:', err);
+    drawIdleLine();
+  });
 }
 
 function stopWaveform() {
   if (animFrame) cancelAnimationFrame(animFrame);
-  if (audioContext) audioContext.close();
+  if (audioContext) { audioContext.close(); audioContext = null; }
+  drawIdleLine();
+}
 
-  // Draw flat idle line
+function drawIdleLine() {
   const canvas = document.getElementById('waveform');
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -194,7 +207,7 @@ function startTranscription() {
       const t = event.results[i][0].transcript;
       if (event.results[i].isFinal) {
         if (interimEl) { interimEl.remove(); interimEl = null; }
-        appendTranscript('You', t, false);
+        appendTranscript('You', t);
       } else {
         interim += t;
       }
@@ -220,10 +233,11 @@ function stopTranscription() {
   if (recognition) { recognition.stop(); recognition = null; }
 }
 
-function appendTranscript(speaker, text, isAda) {
+function appendTranscript(speaker, text) {
   const body = document.getElementById('transcriptBody');
   const line = document.createElement('div');
   line.className = 'transcript-line';
+  const isAda = speaker === 'Ada';
   line.innerHTML = `
     <span class="transcript-speaker ${isAda ? 'ada' : 'you'}">${speaker}</span>
     <span class="transcript-text">${text}</span>
@@ -245,9 +259,7 @@ async function loadContext() {
     badge.className = 'context-badge loaded';
 
     renderContextFields(data);
-
-    const json = JSON.stringify(data, null, 2);
-    document.getElementById('jsonBlock').textContent = json;
+    document.getElementById('jsonBlock').textContent = JSON.stringify(data, null, 2);
   } catch (e) {
     badge.textContent = 'Error';
     badge.className = 'context-badge error';
@@ -257,8 +269,6 @@ async function loadContext() {
 function renderContextFields(data) {
   const container = document.getElementById('contextFields');
   container.innerHTML = '';
-
-  // Show top-level fields, skip internal notes
   for (const [key, value] of Object.entries(data)) {
     if (key === '_note') continue;
     const field = document.createElement('div');
@@ -282,15 +292,5 @@ function toggleJson() {
   label.textContent = jsonOpen ? 'Hide raw JSON' : 'Show raw JSON';
 }
 
-// ── Draw idle waveform on load ──
-window.addEventListener('load', () => {
-  const canvas = document.getElementById('waveform');
-  const ctx = canvas.getContext('2d');
-  canvas.width = canvas.offsetWidth;
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = '#2a2a35';
-  ctx.beginPath();
-  ctx.moveTo(0, canvas.height / 2);
-  ctx.lineTo(canvas.width, canvas.height / 2);
-  ctx.stroke();
-});
+// ── Draw idle line on load ──
+window.addEventListener('load', drawIdleLine);

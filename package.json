@@ -19,6 +19,7 @@
   },
   "homepage": "https://github.com/richardkirk-ai/ada-voice-visualiser#readme",
   "dependencies": {
+    "@twilio/voice-sdk": "^2.18.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
